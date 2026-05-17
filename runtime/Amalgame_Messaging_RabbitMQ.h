@@ -109,7 +109,10 @@ static inline code_string _amrmq_bytes_dup(amqp_bytes_t b) {
 }
 
 /* Pretty-print an amqp_rpc_reply_t / amqp_status_enum to a
- * GC-allocated string. */
+ * GC-allocated string. For server exceptions, decode the method
+ * id and pull reply_code + reply_text out of the decoded struct
+ * — otherwise the user only sees an opaque "method 655410"
+ * number which is unhelpful at the call site. */
 static inline code_string _amrmq_reply_err(amqp_rpc_reply_t r) {
     if (r.reply_type == AMQP_RESPONSE_NORMAL) return _amrmq_str_dup("");
     if (r.reply_type == AMQP_RESPONSE_LIBRARY_EXCEPTION) {
@@ -117,9 +120,25 @@ static inline code_string _amrmq_reply_err(amqp_rpc_reply_t r) {
         return _amrmq_str_dup(msg ? msg : "AMQP library error");
     }
     if (r.reply_type == AMQP_RESPONSE_SERVER_EXCEPTION) {
-        char buf[256];
-        snprintf(buf, sizeof(buf), "AMQP server exception %u",
-                 (unsigned) r.reply.id);
+        char buf[512];
+        if (r.reply.id == AMQP_CONNECTION_CLOSE_METHOD) {
+            amqp_connection_close_t* m = (amqp_connection_close_t*) r.reply.decoded;
+            snprintf(buf, sizeof(buf),
+                     "AMQP connection.close %d: %.*s",
+                     m->reply_code,
+                     (int)(m->reply_text.len > 400 ? 400 : (int) m->reply_text.len),
+                     (const char*) m->reply_text.bytes);
+        } else if (r.reply.id == AMQP_CHANNEL_CLOSE_METHOD) {
+            amqp_channel_close_t* m = (amqp_channel_close_t*) r.reply.decoded;
+            snprintf(buf, sizeof(buf),
+                     "AMQP channel.close %d: %.*s",
+                     m->reply_code,
+                     (int)(m->reply_text.len > 400 ? 400 : (int) m->reply_text.len),
+                     (const char*) m->reply_text.bytes);
+        } else {
+            snprintf(buf, sizeof(buf), "AMQP server exception (method 0x%X)",
+                     (unsigned) r.reply.id);
+        }
         return _amrmq_str_dup(buf);
     }
     return _amrmq_str_dup("unknown AMQP reply");
@@ -248,16 +267,30 @@ static inline code_bool Amalgame_Messaging_RabbitMQ_DeclareExchange(
     return 1;
 }
 
-/* Declare a queue. Empty name → server auto-names (returned as
- * the function result). Non-empty name returned as-is. */
+/* Declare a queue. Empty name → server auto-names; the returned
+ * string carries the generated name. Non-empty name returned as-is.
+ *
+ * AMQP 0.9.1 says auto-named queues are conventionally exclusive
+ * (only their declaring connection can use them) — RabbitMQ 4+
+ * enforces this strictly and closes the connection with PRECONDITION_FAILED
+ * if a server-named queue is declared with exclusive=false. We
+ * flip exclusive=1 automatically when name is empty so users
+ * don't trip on that mismatch. Named queues stay non-exclusive
+ * so worker pools / persistent consumers still work. */
 static inline code_string Amalgame_Messaging_RabbitMQ_DeclareQueue(
         AmalgameRabbitMQ* r, code_string name) {
     if (!r || !r->conn) { if (r) r->last_error = _amrmq_str_dup("not connected"); return (code_string) ""; }
     if (!name) name = (code_string) "";
+    int server_named = (*name == '\0') ? 1 : 0;
+    int exclusive = server_named ? 1 : 0;
+    int auto_delete = 1;
     amqp_queue_declare_ok_t* ok = amqp_queue_declare(
         r->conn, AMALGAME_RMQ_CHANNEL,
         amqp_cstring_bytes(name),
-        0, 0, 0, 1,                       /* passive, durable, exclusive, auto_delete */
+        0,             /* passive — create if not exists */
+        0,             /* durable — false in v1 */
+        exclusive,
+        auto_delete,
         amqp_empty_table);
     amqp_rpc_reply_t rep = amqp_get_rpc_reply(r->conn);
     if (rep.reply_type != AMQP_RESPONSE_NORMAL || !ok) {
