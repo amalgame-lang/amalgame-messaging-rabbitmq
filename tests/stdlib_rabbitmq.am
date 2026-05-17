@@ -1,0 +1,120 @@
+// Stdlib test: Amalgame.Messaging.RabbitMQ — librabbitmq binding.
+//
+// Exercises the full AMQP 0.9.1 round-trip:
+//   Connect → DeclareExchange → DeclareQueue → Bind →
+//   Publish → Consume → Poll → Ack → Close.
+//
+// CI uses rabbitmq:4 service container with default guest/guest
+// credentials. Local dev: docker run --rm -d -p 5672:5672 rabbitmq:4
+
+namespace Tests
+
+import Amalgame.Messaging.RabbitMQ
+
+public class Program {
+    public static void Main(string[] args) {
+
+        let host: string = Env.Get("RABBITMQ_HOST")
+        let realHost: string = if (String_Length(host) > 0) { host } else { "127.0.0.1" }
+
+        // ── Connect ──────────────────────────────────────────
+        let r = RabbitMQ.Connect(realHost, 5672, "guest", "guest", "/")
+        if (RabbitMQ.IsOpen(r)) {
+            Console.WriteLine("[PASS] Connect")
+        } else {
+            Console.WriteLine("[FAIL] Connect: " + RabbitMQ.LastError(r))
+            return
+        }
+
+        // ── DeclareExchange (direct) ────────────────────────
+        let okEx: bool = RabbitMQ.DeclareExchange(r, "amctest.x", "direct")
+        if (okEx) {
+            Console.WriteLine("[PASS] DeclareExchange direct")
+        } else {
+            Console.WriteLine("[FAIL] DeclareExchange: " + RabbitMQ.LastError(r))
+        }
+
+        // ── DeclareQueue (server-named) ─────────────────────
+        let qname: string = RabbitMQ.DeclareQueue(r, "")
+        if (String_Length(qname) > 0) {
+            Console.WriteLine("[PASS] DeclareQueue server-named")
+        } else {
+            Console.WriteLine("[FAIL] DeclareQueue: " + RabbitMQ.LastError(r))
+        }
+
+        // ── Bind queue ← exchange ───────────────────────────
+        let okBind: bool = RabbitMQ.Bind(r, qname, "amctest.x", "amctest.rk")
+        if (okBind) {
+            Console.WriteLine("[PASS] Bind")
+        } else {
+            Console.WriteLine("[FAIL] Bind: " + RabbitMQ.LastError(r))
+        }
+
+        // ── Publish ─────────────────────────────────────────
+        let okPub: bool = RabbitMQ.Publish(r, "amctest.x", "amctest.rk", "hello rabbit")
+        if (okPub) {
+            Console.WriteLine("[PASS] Publish")
+        } else {
+            Console.WriteLine("[FAIL] Publish: " + RabbitMQ.LastError(r))
+        }
+
+        // ── Consume + Poll ──────────────────────────────────
+        let okCon: bool = RabbitMQ.Consume(r, qname)
+        if (okCon) {
+            Console.WriteLine("[PASS] Consume")
+        } else {
+            Console.WriteLine("[FAIL] Consume: " + RabbitMQ.LastError(r))
+        }
+
+        let gotMsg: bool = RabbitMQ.Poll(r, 3000)
+        if (gotMsg) {
+            Console.WriteLine("[PASS] Poll received message")
+        } else {
+            Console.WriteLine("[FAIL] Poll: " + RabbitMQ.LastError(r))
+            return
+        }
+
+        // ── Verify message fields ───────────────────────────
+        let body: string = RabbitMQ.LastBody(r)
+        let rk: string = RabbitMQ.LastRoutingKey(r)
+        let ex: string = RabbitMQ.LastExchange(r)
+        if (body == "hello rabbit") {
+            Console.WriteLine("[PASS] LastBody matches")
+        } else {
+            Console.WriteLine("[FAIL] body got '" + body + "'")
+        }
+        if (rk == "amctest.rk") {
+            Console.WriteLine("[PASS] LastRoutingKey matches")
+        } else {
+            Console.WriteLine("[FAIL] rk got '" + rk + "'")
+        }
+        if (ex == "amctest.x") {
+            Console.WriteLine("[PASS] LastExchange matches")
+        } else {
+            Console.WriteLine("[FAIL] exchange got '" + ex + "'")
+        }
+
+        let dtag: int = RabbitMQ.LastDeliveryTag(r)
+        if (dtag > 0) {
+            Console.WriteLine("[PASS] LastDeliveryTag > 0")
+        } else {
+            Console.WriteLine("[FAIL] dtag = " + String_FromInt(dtag))
+        }
+
+        // ── Ack ─────────────────────────────────────────────
+        let okAck: bool = RabbitMQ.Ack(r)
+        if (okAck) {
+            Console.WriteLine("[PASS] Ack")
+        } else {
+            Console.WriteLine("[FAIL] Ack: " + RabbitMQ.LastError(r))
+        }
+
+        // ── Close ───────────────────────────────────────────
+        RabbitMQ.Close(r)
+        if (!RabbitMQ.IsOpen(r)) {
+            Console.WriteLine("[PASS] Close")
+        } else {
+            Console.WriteLine("[FAIL] still open after Close")
+        }
+    }
+}

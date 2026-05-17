@@ -1,0 +1,88 @@
+# Package manifest — amalgame-messaging-rabbitmq
+#
+# RabbitMQ / AMQP 0.9.1 client for Amalgame — dynamic-linked to
+# librabbitmq (also known as rabbitmq-c, the official C client).
+# Works against any AMQP 0.9.1 broker: RabbitMQ, Apache Qpid,
+# CloudAMQP, etc.
+#
+# AMQP 0.9.1 has 4 core concepts (vs MQTT/NATS's 2):
+#   - Exchange : where you publish to (with a type: direct,
+#     fanout, topic, headers)
+#   - Queue    : where consumers read from
+#   - Binding  : link between an Exchange and a Queue with a
+#                routing-key filter
+#   - Message  : payload + routing-key
+#
+# That extra ceremony unlocks routing patterns MQTT/NATS don't
+# express natively (pub/sub via fanout, per-key worker queues via
+# direct, wildcard topic trees via topic). v1 exposes the
+# primitives; users compose patterns at the call site.
+#
+# Surface (v1):
+#   Connect(host, port, user, password, vhost)    AMQP login
+#   Close / IsOpen / LastError
+#   DeclareExchange(name, type)                    type ∈ direct/fanout/topic/headers
+#   DeclareQueue(name)                             empty name → server auto-names
+#   Bind(queue, exchange, routingKey)               link queue ← exchange
+#   Publish(exchange, routingKey, body)             produce
+#   Consume(queue)                                  start the consumer
+#   Poll(timeout_ms)                                blocking-receive one msg
+#   LastBody / LastRoutingKey / LastExchange         + LastDeliveryTag
+#   Ack                                              acknowledge last polled msg
+#
+# Out of scope (v2):
+#   - Multiple channels per connection (we use channel 1)
+#   - Confirmation mode (publisher confirms)
+#   - Transactions (tx.select / commit / rollback)
+#   - Headers (basic.properties)
+#   - Persistent messages + durable queues (declared transient by
+#     default; v2 exposes the flags)
+#   - Dead-letter exchanges
+#   - TLS (amqps://)
+#   - SASL methods other than PLAIN
+#
+# Installation:
+#
+#   amc package add rabbitmq                                       # via index
+#   amc package add github.com/amalgame-lang/amalgame-messaging-rabbitmq@v0.1.0
+
+[package]
+name              = "amalgame-messaging-rabbitmq"
+version           = "0.1.0"
+license           = "Apache-2.0"
+description       = "RabbitMQ / AMQP 0.9.1 client for Amalgame — dynamic-linked to librabbitmq (rabbitmq-c)."
+authors           = ["Bastien Mouget"]
+required-amalgame = ">=0.8.19"
+schema-version    = 1
+
+[stdlib]
+class     = "RabbitMQ"
+header    = "runtime/Amalgame_Messaging_RabbitMQ.h"
+namespace = "Amalgame.Messaging.RabbitMQ"
+
+# No vendored sources — librabbitmq is provided by the system.
+# Header layout differs across distros (Debian: <amqp.h>,
+# Fedora newer: <rabbitmq-c/amqp.h>), handled via __has_include
+# in the wrapper.
+
+# Link against system librabbitmq. Universal name.
+libs       = ["rabbitmq"]
+
+[stdlib.functions]
+Connect           = { returns = "AmalgameRabbitMQ*" }
+Close             = { returns = "void" }
+IsOpen            = { returns = "code_bool" }
+LastError         = { returns = "code_string" }
+DeclareExchange   = { returns = "code_bool" }
+DeclareQueue      = { returns = "code_string" }
+Bind              = { returns = "code_bool" }
+Publish           = { returns = "code_bool" }
+Consume           = { returns = "code_bool" }
+Poll              = { returns = "code_bool" }
+LastBody          = { returns = "code_string" }
+LastRoutingKey    = { returns = "code_string" }
+LastExchange      = { returns = "code_string" }
+LastDeliveryTag   = { returns = "i64" }
+Ack               = { returns = "code_bool" }
+
+[dependencies]

@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test against amc ${{ matrix.amc-tag }}
+    runs-on: ubuntu-latest
+
+    # rabbitmq:4 ships with sane defaults: guest/guest on vhost
+    # "/", AMQP listener on 5672. Management UI on 15672 isn't
+    # exposed — we only need the AMQP port for tests.
+    services:
+      rabbitmq:
+        image: rabbitmq:4
+        ports: ['5672:5672']
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 10
+          --health-start-period 30s
+
+    env:
+      RABBITMQ_HOST: "127.0.0.1"
+      RABBITMQ_PORT: "5672"
+
+    strategy:
+      fail-fast: false
+      matrix:
+        amc-tag: [v0.8.20]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps (libgc + libcurl + librabbitmq-dev)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libgc-dev libcurl4-openssl-dev librabbitmq-dev
+
+      - name: Download amc ${{ matrix.amc-tag }}
+        run: |
+          set -e
+          TAG="${{ matrix.amc-tag }}"
+          VERSION="${TAG#v}"
+          curl -sSL -o amc.tar.gz \
+            "https://github.com/amalgame-lang/Amalgame/releases/download/${TAG}/amc-${VERSION}-linux-x86_64.tar.gz"
+          mkdir -p $RUNNER_TEMP/amc-install
+          tar -xzf amc.tar.gz -C $RUNNER_TEMP/amc-install --strip-components=1
+          echo "AMC=$RUNNER_TEMP/amc-install/bin/amc" >> $GITHUB_ENV
+          echo "AMC_RUNTIME=$RUNNER_TEMP/amc-install/share/amalgame/runtime" >> $GITHUB_ENV
+
+      - name: Probe librabbitmq + rabbitmq reachability
+        run: |
+          echo "── librabbitmq header probe ──"
+          for h in 'rabbitmq-c/amqp.h' 'amqp.h'; do
+            if echo "#include <$h>" | gcc -E -xc - >/dev/null 2>&1; then
+              echo "  $h: OK"; break
+            fi
+          done
+          echo "── rabbitmq reachability ──"
+          if (echo > /dev/tcp/127.0.0.1/5672) 2>/dev/null; then
+            echo "  rabbitmq: reachable at 127.0.0.1:5672"
+          else
+            echo "  rabbitmq: NOT reachable — service container not healthy?"; exit 1
+          fi
+
+      - name: Run end-to-end tests
+        run: |
+          chmod +x ./tests/run_tests.sh
+          ./tests/run_tests.sh "$AMC"
